@@ -18,7 +18,7 @@ from transformers import (
     TrainingArguments,
 )
 
-from ...import_utils import is_deepspeed_available, is_torch_distributed_available
+from ...import_utils import is_deepspeed_available, is_torch_distributed_available, is_torch_zendnn_plugin_available
 from ..base import Backend
 from ..peft_utils import apply_peft
 from ..transformers_utils import random_init_weights
@@ -29,6 +29,10 @@ if is_deepspeed_available():
 
 if is_torch_distributed_available():
     import torch.distributed
+
+if is_torch_zendnn_plugin_available():
+    import torch_zendnn_plugin  # noqa: F401, F403
+
 
 # bachend logger
 LOGGER = getLogger("pytorch")
@@ -96,10 +100,12 @@ class PyTorchBackend(Backend[PyTorchConfig]):
         # Torch compile
         if self.config.torch_compile:
             if self.config.library == "diffusers":
-                LOGGER.info("\t+ Using torch.compile on unet forward pass")
-                # TODO: should we compile vae and/or clip as well ?
-                self.pretrained_model.unet.forward = torch.compile(
-                    self.pretrained_model.unet.forward, **self.config.torch_compile_config
+                LOGGER.info("\t+ Using torch.compile to compile unet and vae")
+                self.pretrained_model.unet = torch.compile(
+                    self.pretrained_model.unet, **self.config.torch_compile_config
+                )
+                self.pretrained_model.vae.decode = torch.compile(
+                    self.pretrained_model.vae.decode, **self.config.torch_compile_config
                 )
             else:
                 LOGGER.info("\t+ Using torch.compile on forward pass")
@@ -259,19 +265,22 @@ class PyTorchBackend(Backend[PyTorchConfig]):
     @property
     def is_bnb_quantized(self) -> bool:
         return self.config.quantization_scheme == "bnb" or (
-            getattr(self.pretrained_config, "quantization_config", {}).get("quant_method", None) == "bnb"
+            hasattr(self.pretrained_config, "quantization_config")
+            and self.pretrained_config.quantization_config.get("quant_method", None) == "bnb"
         )
 
     @property
     def is_gptq_quantized(self) -> bool:
         return self.config.quantization_scheme == "gptq" or (
-            getattr(self.pretrained_config, "quantization_config", {}).get("quant_method", None) == "gptq"
+            hasattr(self.pretrained_config, "quantization_config")
+            and self.pretrained_config.quantization_config.get("quant_method", None) == "gptq"
         )
 
     @property
     def is_awq_quantized(self) -> bool:
         return self.config.quantization_scheme == "awq" or (
-            getattr(self.pretrained_config, "quantization_config", {}).get("quant_method", None) == "awq"
+            hasattr(self.pretrained_config, "quantization_config")
+            and self.pretrained_config.quantization_config.get("quant_method", None) == "awq"
         )
 
     @property
@@ -280,11 +289,11 @@ class PyTorchBackend(Backend[PyTorchConfig]):
             (
                 hasattr(self.pretrained_config, "quantization_config")
                 and hasattr(self.pretrained_config.quantization_config, "exllama_config")
-                and self.pretrained_config.quantization_config.exllama_config.get("exllama_version", None) == 2
+                and self.pretrained_config.quantization_config.exllama_config.get("version", None) == 2
             )
             or (
                 "exllama_config" in self.config.quantization_config
-                and self.config.quantization_config["exllama_config"].get("exllama_version", None) == 2
+                and self.config.quantization_config["exllama_config"].get("version", None) == 2
             )
         )
 
